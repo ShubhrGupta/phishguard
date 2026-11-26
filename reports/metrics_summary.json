@@ -1,0 +1,37 @@
+{
+  "1. URL Lexical Tabular Expert": {
+    "ROC-AUC": 0.8423,
+    "F1-Score": 0.733,
+    "Precision": 0.8465,
+    "Recall": 0.6464,
+    "Brier_Loss": 0.1579
+  },
+  "2. URL Char N-Gram Subword Expert": {
+    "ROC-AUC": 0.9714,
+    "F1-Score": 0.9058,
+    "Precision": 0.9278,
+    "Recall": 0.8848,
+    "Brier_Loss": 0.0662
+  },
+  "3. DOM Behavioral Expert": {
+    "ROC-AUC": 0.8627,
+    "F1-Score": 0.7856,
+    "Precision": 0.8048,
+    "Recall": 0.7672,
+    "Brier_Loss": 0.1471
+  },
+  "4. Semantic HTML/Text Expert": {
+    "ROC-AUC": 0.9809,
+    "F1-Score": 0.9323,
+    "Precision": 0.9659,
+    "Recall": 0.9009,
+    "Brier_Loss": 0.053
+  },
+  "5. Context-Gated Calibrated Fusion (v3.0)": {
+    "ROC-AUC": 0.9904,
+    "F1-Score": 0.9492,
+    "Precision": 0.9627,
+    "Recall": 0.936,
+    "Brier_Loss": 0.0382
+  }
+}
