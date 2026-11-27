@@ -1,4 +1,6 @@
 import asyncio
+import importlib
+import os
 import sys
 from pathlib import Path
 from urllib.parse import urljoin
@@ -21,17 +23,40 @@ from sklearn.metrics import (
 )
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
-sys.path.append(str(ROOT_DIR / "src"))
+for p in (ROOT_DIR, ROOT_DIR / "src"):
+    if str(p) not in sys.path:
+        sys.path.append(str(p))
 
-from features import (
-    extract_clean_text,
-    extract_dom_features,
-    extract_modality_integrity,
-    extract_url_features,
-    normalize_url_for_subwords,
-)
+try:
+    feat_mod = importlib.import_module("features_3")
+except ModuleNotFoundError:
+    feat_mod = importlib.import_module("features")
 
-bundle = joblib.load(ROOT_DIR / "models" / "phishguard_bundle.joblib")
+extract_clean_text = feat_mod.extract_clean_text
+extract_dom_features = feat_mod.extract_dom_features
+extract_modality_integrity = feat_mod.extract_modality_integrity
+extract_url_features = feat_mod.extract_url_features
+normalize_url_for_subwords = feat_mod.normalize_url_for_subwords
+
+
+def resolve_bundle_path() -> Path:
+    env_path = os.getenv("PHRESHPHISH_BUNDLE_PATH")
+    if env_path:
+        return Path(env_path)
+    v3_default = ROOT_DIR / "artifacts" / "v3_gated_4expert" / "phreshphish_3.0-25k-gated-4expert.joblib"
+    legacy_default = ROOT_DIR / "models" / "phishguard_bundle.joblib"
+    return v3_default if v3_default.exists() else legacy_default
+
+
+def pos_proba_single(model, X) -> float:
+    proba = model.predict_proba(X)
+    classes = list(getattr(model, "classes_", [0, 1]))
+    idx = classes.index(1) if 1 in classes else -1
+    return float(proba[0, idx])
+
+
+BUNDLE_PATH = resolve_bundle_path()
+bundle = joblib.load(BUNDLE_PATH)
 url_model = bundle["url_model"]
 char_model = bundle["char_model"]
 char_tfidf = bundle["char_tfidf"]
@@ -39,6 +64,9 @@ dom_model = bundle["dom_model"]
 txt_model = bundle["txt_model"]
 word_tfidf = bundle["tfidf"]
 meta_model = bundle["meta_model"]
+
+URL_FEATURE_COLS = bundle.get("url_features")
+DOM_FEATURE_COLS = bundle.get("dom_features")
 
 BRAND_ASSET_DOMAINS = {
     "paypal.com": "PayPal",
@@ -136,21 +164,27 @@ def predict_sample_v21(url: str, html: str) -> dict:
     gate_feats = extract_modality_integrity(html, clean_txt, d_feats)
     p_vis, hotlinked = compute_visual_asset_risk(url, html)
 
-    p_url = float(url_model.predict_proba(pd.DataFrame([u_feats]))[0, 1])
-    p_char = float(char_model.predict_proba(char_tfidf.transform([sub_str]))[0, 1])
-    p_dom = float(dom_model.predict_proba(pd.DataFrame([d_feats]))[0, 1]) if html else 0.50
-    p_txt = float(txt_model.predict_proba(word_tfidf.transform([clean_txt]))[0, 1]) if html else 0.50
+    url_df = pd.DataFrame([{k: u_feats.get(k, 0.0) for k in URL_FEATURE_COLS}] if URL_FEATURE_COLS else [u_feats]).fillna(0.0)
+    dom_df = pd.DataFrame([{k: d_feats.get(k, 0.0) for k in DOM_FEATURE_COLS}] if DOM_FEATURE_COLS else [d_feats]).fillna(0.0)
 
+    p_url = pos_proba_single(url_model, url_df)
+    p_char = pos_proba_single(char_model, char_tfidf.transform([sub_str]))
+    p_dom = pos_proba_single(dom_model, dom_df) if html else 0.50
+    p_txt = pos_proba_single(txt_model, word_tfidf.transform([clean_txt])) if html else 0.50
+
+    # Canonical 7-feature meta row aligned with 02_train_and_evaluate.py:
+    # [p_url, p_char, p_dom, p_txt, html_available, text_density_log, has_any_form]
     meta_row = np.array([[
         p_url,
         p_char,
         p_dom,
         p_txt,
-        gate_feats["html_available"],
-        gate_feats["text_density_log"],
-        gate_feats["has_any_form"],
-    ]])
-    base_fused = float(meta_model.predict_proba(meta_row)[0, 1])
+        float(gate_feats["html_available"]),
+        float(gate_feats["text_density_log"]),
+        float(gate_feats["has_any_form"]),
+    ]], dtype=np.float64)
+
+    base_fused = pos_proba_single(meta_model, meta_row)
     p_fused = max(base_fused, p_vis)
 
     return {
@@ -166,7 +200,7 @@ def predict_sample_v21(url: str, html: str) -> dict:
 
 
 def run_domain_disjoint_eval(target_per_class: int = 500):
-    print("\n=== PART A: DOMAIN-DISJOINT UNSEEN SHARD EVALUATION (v2.1 4-EXPERT + GATING) ===")
+    print(f"\n=== PART A: DOMAIN-DISJOINT UNSEEN SHARD EVALUATION (Bundle: {BUNDLE_PATH.name}) ===")
     train_df = pd.read_parquet(ROOT_DIR / "data" / "processed" / "train.parquet")
     test_df = pd.read_parquet(ROOT_DIR / "data" / "processed" / "test.parquet")
     seen_domains = set(train_df["url"].map(get_apex)) | set(test_df["url"].map(get_apex))
@@ -235,7 +269,7 @@ def run_domain_disjoint_eval(target_per_class: int = 500):
 
 
 async def run_live_web_audit():
-    print("\n=== PART B: LIVE REAL-WORLD UNSEEN WEBSITE AUDIT (v2.1) ===")
+    print("\n=== PART B: LIVE REAL-WORLD UNSEEN WEBSITE AUDIT ===")
     live_benign_urls = [
         "https://docs.python.org/3/library/asyncio.html",
         "https://stackoverflow.com/questions/11227809/why-is-processing-a-sorted-array-faster",
